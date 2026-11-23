@@ -1,0 +1,27 @@
+# Data analysis and document processing packages
+# Installed alongside the MCP server by install.sh
+
+pandas
+numpy
+openpyxl
+xlsxwriter
+python-docx
+python-pptx
+pypdf
+pdfplumber
+matplotlib
+seaborn
+plotly
+kaleido
+reportlab
+Pillow
+lxml
+defusedxml
+markdown
+mammoth
+htmldocx
+imageio
+duckdb
+PyYAML
+requests
+ffmpeg-python

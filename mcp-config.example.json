@@ -1,0 +1,49 @@
+{
+  "_comment": "QuickRun MCP connector configuration examples",
+  "mcpServers": {
+    "_method_A_uvx_zero_install": {
+      "_note": "Requires: gh auth login && gh auth setup-git",
+      "command": "/opt/homebrew/bin/uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/liangyimingcom/quickrun-mcp",
+        "quickrun-mcp[data]"
+      ],
+      "env": {
+        "WORKSPACE_DIR": "~/.quickrun/workspace",
+        "ALLOWED_FOLDERS": "~/Downloads:~/Desktop",
+        "DEFAULT_TIMEOUT": "60",
+        "MAX_OUTPUT_CHARS": "61440",
+        "ALLOW_NETWORK": "true"
+      }
+    },
+    "_method_A_uvx_ssh_alternative": {
+      "_note": "Use if HTTPS fails. Requires SSH key added to GitHub.",
+      "command": "/opt/homebrew/bin/uvx",
+      "args": [
+        "--from",
+        "git+ssh://git@github.com/liangyimingcom/quickrun-mcp",
+        "quickrun-mcp[data]"
+      ],
+      "env": {
+        "WORKSPACE_DIR": "~/.quickrun/workspace",
+        "ALLOWED_FOLDERS": "~/Downloads:~/Desktop",
+        "DEFAULT_TIMEOUT": "60",
+        "MAX_OUTPUT_CHARS": "61440",
+        "ALLOW_NETWORK": "true"
+      }
+    },
+    "_method_B_venv_install": {
+      "_note": "After running: gh repo clone ... && bash install.sh",
+      "command": "~/.quickrun/venv/bin/quickrun-mcp",
+      "args": [],
+      "env": {
+        "WORKSPACE_DIR": "~/.quickrun/workspace",
+        "ALLOWED_FOLDERS": "~/Downloads:~/Desktop",
+        "DEFAULT_TIMEOUT": "60",
+        "MAX_OUTPUT_CHARS": "61440",
+        "ALLOW_NETWORK": "true"
+      }
+    }
+  }
+}

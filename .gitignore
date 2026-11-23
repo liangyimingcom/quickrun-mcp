@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Testing
+.pytest_cache/
+.tox/
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project runtime dirs (created at runtime, not source code)
+workspace/
+*.sb
+
+# Distribution
+*.zip
+*.tar.gz
+*.whl
+
+# Secrets — never commit these
+.env
+*.pem
+*.key
+credentials

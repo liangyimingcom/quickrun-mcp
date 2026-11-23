@@ -6,8 +6,8 @@
       "command": "/opt/homebrew/bin/uvx",
       "args": [
         "--from",
-        "git+https://github.com/liangyimingcom/quickrun-mcp",
-        "quickrun-mcp[data]"
+        "quickrun-mcp[data] @ git+https://github.com/liangyimingcom/quickrun-mcp",
+        "quickrun-mcp"
       ],
       "env": {
         "WORKSPACE_DIR": "~/.quickrun/workspace",
@@ -22,8 +22,8 @@
       "command": "/opt/homebrew/bin/uvx",
       "args": [
         "--from",
-        "git+ssh://git@github.com/liangyimingcom/quickrun-mcp",
-        "quickrun-mcp[data]"
+        "quickrun-mcp[data] @ git+ssh://git@github.com/liangyimingcom/quickrun-mcp",
+        "quickrun-mcp"
       ],
       "env": {
         "WORKSPACE_DIR": "~/.quickrun/workspace",

@@ -104,11 +104,11 @@ gh auth setup-git      # 让 git/uvx 通过 gh 凭证访问私有仓库
 | 字段 | 填写内容 |
 |---|---|
 | **Command** | `/opt/homebrew/bin/uvx`（或 `~/.local/bin/uvx`，运行 `which uvx` 确认） |
-| **Args（每项分开填）** | `--from` `git+https://github.com/liangyimingcom/quickrun-mcp` `quickrun-mcp[data]` |
+| **Args（每项分开填）** | `--from` `quickrun-mcp[data] @ git+https://github.com/liangyimingcom/quickrun-mcp` `quickrun-mcp` |
 | **Env** | 见第 4 节 |
 
 > **SSH 备选（如 HTTPS 有问题）：**
-> Args: `--from` `git+ssh://git@github.com/liangyimingcom/quickrun-mcp` `quickrun-mcp[data]`
+> Args: `--from` `quickrun-mcp[data] @ git+ssh://git@github.com/liangyimingcom/quickrun-mcp` `quickrun-mcp`
 > 需先配置 SSH key：`ssh-keygen -t ed25519` → 添加到 GitHub Settings → SSH keys。
 
 `[data]` 额外项自动安装 pandas、numpy、openpyxl、matplotlib、Pillow、requests 等数据分析包。

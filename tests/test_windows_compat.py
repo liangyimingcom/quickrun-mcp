@@ -113,3 +113,15 @@ def test_find_bash_or_cmd_fallback(tmp_path, monkeypatch):
         assert r["return_code"] == -1
     else:
         assert r["return_code"] == 0 and "hello" in r["stdout"]
+
+
+def test_cli_help_and_version_exit_immediately():
+    """`quickrun-mcp --help` must print and exit, not start a stdio server."""
+    import subprocess
+    for flag, needle in (("--help", "usage"), ("--version", "quickrun-mcp")):
+        r = subprocess.run(
+            [sys.executable, "-c", "import sys; from quickrun_mcp.server import main; sys.argv=['x', %r]; main()" % flag],
+            stdin=subprocess.PIPE, capture_output=True, text=True, timeout=30,
+        )
+        assert r.returncode == 0, r.stderr
+        assert needle in r.stdout.lower()

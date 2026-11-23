@@ -337,8 +337,39 @@ async def list_installed_packages() -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
+_USAGE = """usage: quickrun-mcp [--help | --version]
+
+QuickRun MCP server. Started without arguments it speaks MCP over stdio,
+so it is normally launched by an MCP client (AWS Quick: Connectors -> Local MCP).
+
+Environment variables: WORKSPACE_DIR, ALLOWED_FOLDERS (separator: '{sep}'),
+DEFAULT_TIMEOUT, MAX_OUTPUT_CHARS, ALLOW_NETWORK, ENABLE_SHELL_TOOLS,
+SHELL_ALLOW_SUDO, SHELL_SANDBOX, QUICKRUN_BASH.
+"""
+
+
+def _handle_cli_flags(argv: list[str]) -> bool:
+    """Handle --help / --version. Returns True if the process should exit."""
+    from . import __version__
+
+    if any(a in ("-h", "--help") for a in argv):
+        print(_USAGE.format(sep=os.pathsep))
+        print(f"version : {__version__}")
+        print(f"python  : {sys.executable}")
+        print(f"config  : {_config}")
+        return True
+    if any(a in ("-V", "--version") for a in argv):
+        print(f"quickrun-mcp {__version__}")
+        return True
+    return False
+
+
 def main() -> None:
     """Start the MCP server on stdio."""
+    # Without this, "quickrun-mcp --help" started a server and waited on stdin
+    # forever, which looks like a hang when testing an install by hand.
+    if _handle_cli_flags(sys.argv[1:]):
+        return
     ws = _config.workspace_dir
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "artifacts").mkdir(exist_ok=True)

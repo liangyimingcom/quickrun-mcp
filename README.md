@@ -202,7 +202,7 @@ bash ~/.quickrun/src/install.sh    # git pull + reinstall
 
 # 升级（方式 A）：uvx 会缓存已经下载的版本。如果启动的还是旧版本，执行一次带 --refresh 的命令，
 # 然后在 Quick 里把连接器关掉再打开：
-uvx --refresh --from "quickrun-mcp[data] @ git+https://github.com/liangyimingcom/quickrun-mcp" quickrun-mcp --help
+uvx --refresh --from "quickrun-mcp[data] @ git+https://github.com/liangyimingcom/quickrun-mcp" quickrun-mcp --version
 
 # 卸载
 rm -rf ~/.quickrun
@@ -300,7 +300,9 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 & "$env:USERPROFILE\.local\bin\uvx.exe" --from "quickrun-mcp[data] @ git+https://github.com/liangyimingcom/quickrun-mcp" quickrun-mcp --help
 ```
 
-第一次会下载 Python 和数据分析包，需要一两分钟。报认证错误就是仓库访问权限的问题，先完成 `gh auth login` + `gh auth setup-git`。
+第一次会下载 Python 和数据分析包，需要一两分钟，最后打印用法和版本号后退出。报认证错误就是仓库访问权限的问题，先完成 `gh auth login` + `gh auth setup-git`。
+
+> v1.0.0 不认识 `--help`，会直接启动服务、等在 stdin 上，看起来像卡住了。按 Ctrl+C 结束即可，v1.1.0 已修复。
 
 ### 11.4 在 Quick 里添加连接器
 
@@ -361,10 +363,22 @@ $cfg | ConvertTo-Json -Depth 5 | Tee-Object -Variable j; $j | Set-Clipboard
 - **shell 工具**：`run_command` / `run_script` 用 Git Bash 执行（`pwd` 输出 `/c/Users/...` 形式，`pwd -W` 输出 `C:/Users/...`）。
   没有 Git Bash 时，`run_command` 改用 `cmd.exe`，`run_script` 会提示安装 Git for Windows 或设置 `QUICKRUN_BASH`。
 
-### 11.7 v1.1.0 修复的 Windows 问题
+### 11.7 升级到新版本
+
+uvx 会缓存已下载的版本，GitHub 上更新后不会自动换新。升级步骤：
+
+```powershell
+& "$env:USERPROFILE\.local\bin\uvx.exe" --refresh --from "quickrun-mcp[data] @ git+https://github.com/liangyimingcom/quickrun-mcp" quickrun-mcp --version
+```
+
+看到新版本号后，在 Quick 里把 QuickRun 连接器关掉再打开。如果工具行为还是旧的，**完全退出 Quick 再打开**
+（连接器进程只有在 Quick 重新启动它时才会换成新版本）。确认方法：「列出 QuickRun 允许访问的目录」里，
+每个目录完整地占一行，就是新版本。
+
+### 11.8 v1.1.0 修复的 Windows 问题
 
 v1.0.0 在 Windows 上有下面这些问题，v1.1.0 都已修复，并加了回归测试 `tests/test_windows_compat.py`
-（Windows 上 64 个测试通过、5 个仅 macOS 的跳过）：
+（Windows 上 65 个测试通过、5 个仅 macOS 的跳过）：
 
 | 现象（v1.0.0） | 原因 | 修复 |
 |---|---|---|
@@ -374,6 +388,7 @@ v1.0.0 在 Windows 上有下面这些问题，v1.1.0 都已修复，并加了回
 | 超时、`reset_python_session` 直接报 `Error executing tool` | Windows 没有 `os.getpgid` / `os.killpg`，结束进程时抛异常 | 用 `taskkill /T /F` 结束进程树，任何平台都不会抛异常 |
 | **结果晚一轮**：拿到的是上一次调用的输出 | 上一条在超时或被客户端取消后，worker 没被结束，晚到的结果被下一次调用读走 | 每个请求带 id，只接受 id 匹配的回复；请求被取消时立刻结束 worker |
 | **后台进程卡住**：`Popen` 起的进程不动，直到下一次调用才继续 | 子进程继承了 worker 的 stdin 管道；Windows 上 worker 在该管道上有未完成的同步读时，子进程启动会卡住 | worker 把协议管道复制成私有句柄，fd 0/1/2 指向空设备，子进程不再继承管道 |
+| `quickrun-mcp --help` 卡住不退出 | 没有处理命令行参数，直接启动了 stdio 服务 | 支持 `--help` / `--version`，打印后立即退出 |
 
 ## 12. 引导：在 Windows 上安装 mcp-hub
 

@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from ._proc import split_paths
+
 
 class Config:
     def __init__(self) -> None:
@@ -11,11 +13,12 @@ class Config:
             os.environ.get("WORKSPACE_DIR", str(default_workspace))
         )
 
+        # PATH-style list: ':' on macOS/Linux, ';' on Windows (os.pathsep).
+        # Splitting on ':' everywhere broke Windows drive letters
+        # ("C:\\x" became "C" and "\\x").
         allowed_raw = os.environ.get("ALLOWED_FOLDERS", "")
         self.allowed_folders: list[Path] = [
-            Path(p.strip())
-            for p in allowed_raw.split(":")
-            if p.strip()
+            Path(p) for p in split_paths(allowed_raw)
         ]
 
         self.default_timeout = int(os.environ.get("DEFAULT_TIMEOUT", "60"))

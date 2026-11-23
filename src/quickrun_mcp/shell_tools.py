@@ -8,19 +8,22 @@ Design goals (vs common shell-runner MCP reference implementation):
   - Adds: extended DANGEROUS_PATTERNS; sudo blocked by default (SHELL_ALLOW_SUDO=true).
   - Adds: optional SHELL_SANDBOX=true reuses sandbox-exec profile from sandbox.py.
   - shell=True is intentionally NOT used; bash -c is used instead (safer arg handling).
+  - Windows: bash is looked up in Git for Windows (or QUICKRUN_BASH); run_command
+    falls back to cmd.exe when no bash is found; list_processes uses tasklist.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import signal
+import shutil
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 from typing import Optional
 
+from ._proc import IS_WINDOWS, kill_tree, new_group_kwargs
 from .config import Config
 
 # ---------------------------------------------------------------------------
@@ -92,6 +95,48 @@ def is_script_dangerous(
 # Core subprocess runner
 # ---------------------------------------------------------------------------
 
+def find_bash() -> Optional[str]:
+    r"""Locate a bash executable, or None.
+
+    Order: $QUICKRUN_BASH, bash on PATH, then (Windows) Git for Windows.
+    On Windows, C:\Windows\System32\bash.exe is the WSL launcher, which runs
+    inside Linux with different paths, so it is skipped.
+    """
+    override = os.environ.get("QUICKRUN_BASH")
+    if override and Path(override).is_file():
+        return override
+    found = shutil.which("bash")
+    if found and not (IS_WINDOWS and "\\system32\\" in found.lower()):
+        return found
+    if not IS_WINDOWS:
+        return None
+    candidates: list[Path] = []
+    git = shutil.which("git")
+    if git:
+        g = Path(git).resolve()
+        # ...\Git\cmd\git.exe  or  ...\Git\mingw64\bin\git.exe
+        for root in (g.parent.parent, g.parent.parent.parent):
+            candidates += [root / "bin" / "bash.exe", root / "usr" / "bin" / "bash.exe"]
+    for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        base = os.environ.get(var)
+        if base:
+            candidates.append(Path(base) / "Git" / "bin" / "bash.exe")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(Path(local) / "Programs" / "Git" / "bin" / "bash.exe")
+    candidates.append(Path(r"C:\Program Files\Git\bin\bash.exe"))
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return None
+
+
+_NO_BASH_MSG = (
+    "bash not found. On Windows install Git for Windows (it ships Git Bash) "
+    "or set QUICKRUN_BASH to the full path of bash.exe."
+)
+
+
 def _run(
     args: list[str],
     cwd: Optional[str],
@@ -99,7 +144,7 @@ def _run(
     max_output_chars: int,
 ) -> dict:
     """
-    Run a command list, kill entire process group on timeout.
+    Run a command list, kill the whole process tree on timeout.
     Returns {stdout, stderr, return_code, truncated, duration_ms}.
     """
     t0 = time.monotonic()
@@ -108,11 +153,16 @@ def _run(
     try:
         proc = subprocess.Popen(
             args,
+            # Never let the command inherit the MCP server's stdin: that is the
+            # MCP stdio pipe (on Windows a child touching it while the server
+            # has a pending read hangs), and commands must not consume it.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            errors="replace",
             cwd=cwd,
-            start_new_session=True,  # creates new process group → killpg works
+            **new_group_kwargs(),  # own process group -> whole tree can be killed
         )
     except Exception as exc:
         return _err(f"Failed to start process: {exc}", t0)
@@ -121,20 +171,25 @@ def _run(
         stdout, stderr = proc.communicate(timeout=timeout)
         rc = proc.returncode
     except subprocess.TimeoutExpired:
+        kill_tree(proc.pid)
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
             proc.kill()
-        stdout, stderr = proc.communicate()
+        except Exception:
+            pass
+        try:
+            # A detached grandchild may still hold the pipes; don't hang on it.
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = "", ""
         rc = -1
         timed_out = True
 
     duration_ms = int((time.monotonic() - t0) * 1000)
 
     if timed_out:
-        stderr = f"[TIMEOUT] 执行超过 {timeout}s，进程组已终止 / Process group killed after {timeout}s.\n" + stderr
+        stderr = f"[TIMEOUT] 执行超过 {timeout}s，进程组已终止 / Process group killed after {timeout}s.\n" + (stderr or "")
 
-    stdout, stderr, truncated = _truncate_pair(stdout, stderr, max_output_chars)
+    stdout, stderr, truncated = _truncate_pair(stdout or "", stderr or "", max_output_chars)
 
     return {
         "stdout": stdout,
@@ -252,8 +307,16 @@ def tool_run_command(
             prefix, profile_path = _sandbox_prefix(config)
         else:
             prefix = []
+        bash = find_bash()
+        if bash:
+            shell_args = [bash, "-c", command]
+        elif IS_WINDOWS:
+            # No Git Bash: run through cmd.exe so simple commands still work.
+            shell_args = ["cmd.exe", "/d", "/s", "/c", command]
+        else:
+            return _err(_NO_BASH_MSG, time.monotonic())
         return _run(
-            args=prefix + ["bash", "-c", command],
+            args=prefix + shell_args,
             cwd=cwd,
             timeout=timeout,
             max_output_chars=config.max_output_chars,
@@ -291,8 +354,11 @@ def tool_run_script(
             prefix, profile_path = _sandbox_prefix(config)
         else:
             prefix = []
+        bash = find_bash()
+        if not bash:
+            return _err(_NO_BASH_MSG, time.monotonic())
         return _run(
-            args=prefix + ["bash", "-c", script],
+            args=prefix + [bash, "-c", script],
             cwd=cwd,
             timeout=timeout,
             max_output_chars=config.max_output_chars,
@@ -307,23 +373,35 @@ def tool_run_script(
 
 def tool_list_processes(filter_str: Optional[str], config: Config) -> dict:
     t0 = time.monotonic()
+    cmd = ["tasklist"] if IS_WINDOWS else ["ps", "aux"]
     try:
         result = subprocess.run(
-            ["ps", "aux"],
+            cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=10,
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         lines = result.stdout.splitlines()
+        if IS_WINDOWS:
+            # tasklist: blank line, column titles, "=====" ruler, then rows.
+            while lines and not lines[0].strip():
+                lines.pop(0)
+            header_n = next(
+                (i + 1 for i, ln in enumerate(lines[:3]) if ln.startswith("=")), 1
+            )
+        else:
+            header_n = 1
         if lines and filter_str:
             fl = filter_str.lower()
-            header = lines[0]
-            body = [ln for ln in lines[1:] if fl in ln.lower()]
-            output = "\n".join([header] + body)
+            header = lines[:header_n]
+            body = [ln for ln in lines[header_n:] if fl in ln.lower()]
+            output = "\n".join(header + body)
         else:
-            output = result.stdout
+            output = "\n".join(lines)
 
         output, _, truncated = _truncate_pair(output, "", config.max_output_chars)
 

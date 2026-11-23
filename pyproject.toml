@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quickrun-mcp"
-version = "1.0.0"
+version = "1.1.0"
 description = "QuickRun: Python & shell code-execution MCP server for AWS Quick (and any MCP client)"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -6,12 +6,13 @@ import asyncio
 import json
 import logging
 import os
-import signal
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
+from ._proc import join_paths, kill_tree, new_group_kwargs
 from .config import Config
 from .sandbox import _sensitive_paths, build_sandboxed_command, has_sandbox_exec
 
@@ -99,19 +100,26 @@ def _validate_working_dir(
     )
 
 
-async def _kill_proc(proc: asyncio.subprocess.Process) -> None:
-    """Kill process group, then wait."""
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
+def _kill_now(proc: asyncio.subprocess.Process) -> None:
+    """Synchronously kill *proc* and its children. Never raises, on any OS.
+
+    Synchronous on purpose: it is also used while the calling task is being
+    cancelled, where further awaits may be cancelled as well.
+    """
+    if proc.returncode is None:
+        kill_tree(proc.pid)
         try:
             proc.kill()
         except Exception:
             pass
+
+
+async def _kill_proc(proc: asyncio.subprocess.Process) -> None:
+    """Kill the process tree, then wait for it to exit."""
+    _kill_now(proc)
     try:
         await asyncio.wait_for(proc.wait(), timeout=5.0)
-    except (asyncio.TimeoutError, Exception):
+    except Exception:
         pass
 
 
@@ -126,9 +134,9 @@ def _worker_env(config: Config, with_write: bool) -> dict[str, str]:
         writable = [str(config.workspace_dir)]
         if with_write:
             writable += [str(f) for f in config.allowed_folders]
-        env["WRITABLE_PATHS"] = ":".join(writable)
+        env["WRITABLE_PATHS"] = join_paths(writable)
         home = str(Path.home())
-        env["SENSITIVE_PATHS"] = ":".join(_sensitive_paths(home))
+        env["SENSITIVE_PATHS"] = join_paths(_sensitive_paths(home))
 
     return env
 
@@ -178,14 +186,50 @@ class PersistentWorker:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env=env,
-            start_new_session=True,
             limit=_STREAM_LIMIT,
+            **new_group_kwargs(),
         )
 
+    def _discard_now(self) -> None:
+        """Tear the worker down synchronously (safe inside a cancelled task)."""
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            _kill_now(proc)
+        if self._profile_path:
+            try:
+                os.unlink(self._profile_path)
+            except OSError:
+                pass
+            self._profile_path = None
+
+    async def _read_reply(self, req_id: str) -> Optional[dict]:
+        """Read worker output until the reply tagged *req_id*; None on EOF.
+
+        Lines that are not ours (a reply to an earlier, abandoned request, or
+        anything else) are discarded, so a late reply can never be returned
+        as the answer to a later call.
+        """
+        assert self._proc is not None and self._proc.stdout is not None
+        while True:
+            raw = await self._proc.stdout.readline()
+            if not raw:
+                return None
+            try:
+                obj = json.loads(raw.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                logger.warning("Ignoring non-protocol line from worker: %r", raw[:200])
+                continue
+            if isinstance(obj, dict) and obj.get("id") == req_id:
+                return obj
+            logger.warning(
+                "Discarding stale worker reply (id=%s)",
+                obj.get("id") if isinstance(obj, dict) else "?",
+            )
+
     async def _cleanup_proc(self) -> None:
-        if self._proc is not None:
-            await _kill_proc(self._proc)
-            self._proc = None
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            await _kill_proc(proc)
         if self._profile_path:
             try:
                 os.unlink(self._profile_path)
@@ -211,65 +255,77 @@ class PersistentWorker:
                 )
 
         t0 = time.monotonic()
+        req_id = uuid.uuid4().hex
         async with self._lock:
+            try:
+                return await self._execute_locked(code, timeout, resolved_cwd, req_id, t0)
+            except BaseException:
+                # Cancelled (e.g. the MCP client gave up on the request) or an
+                # unexpected error. The worker may still be running the code and
+                # would later write its reply; kill it now so nothing it does
+                # can leak into the next call.
+                self._discard_now()
+                raise
+
+    async def _execute_locked(
+        self,
+        code: str,
+        timeout: int,
+        resolved_cwd: Optional[str],
+        req_id: str,
+        t0: float,
+    ) -> str:
+        await self._ensure()
+
+        msg = (json.dumps({
+            "id": req_id,
+            "code": code,
+            "workspace_dir": str(self.config.workspace_dir),
+            "working_dir": resolved_cwd or str(self.config.workspace_dir),
+        }) + "\n").encode()
+
+        assert self._proc is not None
+        try:
+            self._proc.stdin.write(msg)
+            await self._proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            await self._cleanup_proc()
             await self._ensure()
+            self._proc.stdin.write(msg)
+            await self._proc.stdin.drain()
 
-            msg = json.dumps({
-                "code": code,
-                "workspace_dir": str(self.config.workspace_dir),
-                "working_dir": resolved_cwd or str(self.config.workspace_dir),
-            }) + "\n"
-
-            assert self._proc is not None
-            try:
-                self._proc.stdin.write(msg.encode())
-                await self._proc.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                await self._cleanup_proc()
-                await self._ensure()
-                self._proc.stdin.write(msg.encode())
-                await self._proc.stdin.drain()
-
-            try:
-                raw = await asyncio.wait_for(
-                    self._proc.stdout.readline(),
-                    timeout=float(timeout) + 2.0,
-                )
-            except asyncio.TimeoutError:
-                await self._cleanup_proc()
-                duration_ms = int((time.monotonic() - t0) * 1000)
-                return _format_result(
-                    {
-                        "stdout": "", "stderr": "",
-                        "error": (
-                            f"TimeoutError: execution exceeded {timeout}s. "
-                            "Worker killed; session reset (all variables lost)."
-                        ),
-                        "files": [],
-                    },
-                    self.config.max_output_chars,
-                    duration_ms=duration_ms,
-                )
-
-            if not raw:
-                await self._cleanup_proc()
-                duration_ms = int((time.monotonic() - t0) * 1000)
-                return _format_result(
-                    {"stdout": "", "stderr": "", "error": "Worker died unexpectedly.", "files": []},
-                    self.config.max_output_chars,
-                    duration_ms=duration_ms,
-                )
-
-            try:
-                result = json.loads(raw.decode())
-            except json.JSONDecodeError as exc:
-                result = {
-                    "stdout": raw.decode()[:500],
-                    "stderr": "", "error": f"Bad worker response: {exc}", "files": [],
-                }
-
+        try:
+            result = await asyncio.wait_for(
+                self._read_reply(req_id),
+                timeout=float(timeout) + 2.0,
+            )
+        except asyncio.TimeoutError:
+            await self._cleanup_proc()
             duration_ms = int((time.monotonic() - t0) * 1000)
-            return _format_result(result, self.config.max_output_chars, duration_ms=duration_ms)
+            return _format_result(
+                {
+                    "stdout": "", "stderr": "",
+                    "error": (
+                        f"TimeoutError: execution exceeded {timeout}s. "
+                        "Worker killed; session reset (all variables lost)."
+                    ),
+                    "files": [],
+                },
+                self.config.max_output_chars,
+                duration_ms=duration_ms,
+            )
+
+        if result is None:
+            await self._cleanup_proc()
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            return _format_result(
+                {"stdout": "", "stderr": "", "error": "Worker died unexpectedly.", "files": []},
+                self.config.max_output_chars,
+                duration_ms=duration_ms,
+            )
+
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        return _format_result(result, self.config.max_output_chars, duration_ms=duration_ms)
 
     async def reset(self) -> str:
         async with self._lock:
@@ -335,8 +391,8 @@ class StatelessExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                start_new_session=True,
                 limit=_STREAM_LIMIT,
+                **new_group_kwargs(),
             )
 
             try:
@@ -344,6 +400,9 @@ class StatelessExecutor:
                     proc.communicate(input=msg),
                     timeout=float(timeout) + 2.0,
                 )
+            except asyncio.CancelledError:
+                _kill_now(proc)
+                raise
             except asyncio.TimeoutError:
                 await _kill_proc(proc)
                 duration_ms = int((time.monotonic() - t0) * 1000)

@@ -163,21 +163,32 @@ def install_audit_hook(writable_paths: list[str], sensitive_paths: list[str]) ->
     """
     import sys as _sys
 
-    norm_writable = [os.path.realpath(p) for p in writable_paths]
-    norm_sensitive = [os.path.realpath(p) for p in sensitive_paths]
-    _tmp_prefixes = (
-        "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"
-    )
+    def _norm(p: str) -> str:
+        # normcase: case-insensitive comparison on Windows
+        return os.path.normcase(os.path.realpath(p))
+
+    def _under(path: str, root: str) -> bool:
+        # Component-aware prefix match: /a/b covers /a/b/c but not /a/bc.
+        return path == root or path.startswith(root.rstrip("\\/") + os.sep)
+
+    norm_writable = [_norm(p) for p in writable_paths]
+    norm_sensitive = [_norm(p) for p in sensitive_paths]
+    _tmp_roots = [
+        _norm(t) for t in (
+            "/tmp", "/private/tmp", "/var/folders", "/private/var/folders",
+            tempfile.gettempdir(),
+        )
+    ] + [_norm(os.devnull)]
 
     def _allowed_write(path: str) -> bool:
-        real = os.path.realpath(path)
-        if any(real.startswith(t) for t in _tmp_prefixes):
+        real = _norm(path)
+        if any(_under(real, t) for t in _tmp_roots):
             return True
-        return any(real.startswith(w) for w in norm_writable)
+        return any(_under(real, w) for w in norm_writable)
 
     def _is_sensitive(path: str) -> bool:
-        real = os.path.realpath(path)
-        return any(real.startswith(s) for s in norm_sensitive)
+        real = _norm(path)
+        return any(_under(real, s) for s in norm_sensitive)
 
     _WRITE_FLAGS = (
         getattr(os, "O_WRONLY", 1)

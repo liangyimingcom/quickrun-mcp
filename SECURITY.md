@@ -27,6 +27,8 @@ cloud sandbox. Please read this section before deploying.
   calls within that session. Malicious code injected into one call can affect subsequent calls.
 - The soft sandbox (Linux/Windows) can be bypassed by code that uses C extension modules
   to call OS functions directly.
+- On Windows the soft sandbox only governs the Python worker itself. Child processes it
+  starts (and the shell tools) are not restricted by it.
 - `SHELL_SANDBOX=true` applies sandbox-exec to shell commands on macOS, but is off by default.
 - Network access is allowed by default (`ALLOW_NETWORK=true`). Set `ALLOW_NETWORK=false` to
   restrict outbound network calls.

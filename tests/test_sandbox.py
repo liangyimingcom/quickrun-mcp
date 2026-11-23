@@ -172,6 +172,6 @@ async def test_stateless_write_to_workspace(stateless_ro, workspace):
 @pytest.mark.asyncio
 async def test_stateless_rw_writes_allowed_folder(stateless_rw, allowed_folder):
     target = str(allowed_folder / "sl_output.txt")
-    code = f"open('{target}', 'w').write('stateless rw')"
+    code = f"open({target!r}, 'w').write('stateless rw')"  # !r: Windows backslashes
     await stateless_rw.execute(code, timeout=10)
     assert Path(target).exists()

@@ -113,6 +113,7 @@ async def run_python(
     - 输出上限 60 KB；超时后会话自动重置（变量丢失）
     - working_dir（可选）：必须在 WORKSPACE_DIR 或 ALLOWED_FOLDERS 内
     - Output capped 60 KB; timeout resets session (all vars lost)
+    - timeout 上限为 DEFAULT_TIMEOUT（默认 60s）/ capped at DEFAULT_TIMEOUT (default 60s)
     - return_code=0 success, 1 exception; duration_ms in footer
     """
     effective = max(1, min(timeout, _config.default_timeout))
@@ -222,7 +223,7 @@ if _ENABLE_SHELL:
         - Returns {stdout, stderr, return_code, truncated, duration_ms}
         """
         import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: tool_run_command(
                 command=command,
@@ -252,7 +253,7 @@ if _ENABLE_SHELL:
         - 返回 {stdout, stderr, return_code, truncated, duration_ms}
         """
         import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: tool_run_script(
                 script=script,
@@ -273,7 +274,7 @@ if _ENABLE_SHELL:
         - 返回 {stdout: 进程列表, stderr, return_code, truncated, duration_ms}
         """
         import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: tool_list_processes(filter_str=filter, config=_config),
         )
@@ -300,7 +301,8 @@ async def list_allowed_folders() -> str:
     else:
         lines.append(
             "\nNo additional allowed folders configured.\n"
-            "Set ALLOWED_FOLDERS=path1:path2 to add folders."
+            f"Set ALLOWED_FOLDERS=path1{os.pathsep}path2 to add folders "
+            "(';' separates paths on Windows, ':' elsewhere)."
         )
     return "\n".join(lines)
 
@@ -318,6 +320,7 @@ async def list_installed_packages() -> str:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "list", "--format=columns"],
+            stdin=subprocess.DEVNULL,  # never inherit the MCP stdio pipe
             capture_output=True,
             text=True,
             timeout=30,

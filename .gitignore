@@ -43,3 +43,6 @@ workspace/
 *.pem
 *.key
 credentials
+
+# uv (local dev)
+uv.lock

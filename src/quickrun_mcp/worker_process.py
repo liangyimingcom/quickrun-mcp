@@ -7,13 +7,15 @@ Usage:
   python worker_process.py --once       # stateless mode: read stdin once, run, exit
 
 Wire protocol (line-delimited JSON):
-  Input  → {"code": "...", "workspace_dir": "..."}
-  Output ← {"stdout": "...", "stderr": "...", "error": null, "files": [...]}
+  Input  → {"id": "...", "code": "...", "workspace_dir": "..."}
+  Output ← {"id": "...", "stdout": "...", "stderr": "...", "error": null, "files": [...]}
+  (persistent mode echoes "id"; the server drops replies whose id is not the
+  one it is waiting for)
 
 Environment variables consumed:
   USE_AUDIT_HOOK=1       install fallback audit hook (set by executor when sandbox-exec absent)
-  WRITABLE_PATHS=p1:p2   paths allowed for writing (for audit hook)
-  SENSITIVE_PATHS=p1:p2  paths blocked for all access (for audit hook)
+  WRITABLE_PATHS=p1:p2   (';' on Windows) paths allowed for writing (for audit hook)
+  SENSITIVE_PATHS=p1:p2  (';' on Windows) paths blocked for all access (for audit hook)
 """
 from __future__ import annotations
 
@@ -33,20 +35,45 @@ _parser.add_argument("--once", action="store_true")
 _args, _ = _parser.parse_known_args()
 
 # ---------------------------------------------------------------------------
-# Save real stdio for communication
+# Isolate the protocol pipes from user code and from child processes.
+#
+# fd 0/1 are the pipes to the MCP server. Keep private, non-inheritable
+# duplicates for the protocol and point fd 0/1/2 at the null device, so that:
+#   * a child started without explicit stdin/stdout (subprocess.Popen(...),
+#     os.system, a background job) does not inherit the pipes. On Windows a
+#     child that inherits a synchronous pipe on which this worker has a
+#     pending read blocks during its own startup until the next request
+#     arrives, so background jobs looked "stuck";
+#   * nothing a child prints can land in the protocol stream (that made
+#     replies arrive one call late);
+#   * a long-lived child cannot keep the stateless executor waiting for EOF.
+# On Windows the CRT's dup2 on fd 0-2 also updates the Win32 standard
+# handles, which is what subprocess hands to children by default.
+# Must run before the audit hook is installed (it opens the null device).
 # ---------------------------------------------------------------------------
-_comm_in = sys.stdin
-_comm_out = sys.stdout
+_comm_in = os.fdopen(os.dup(0), "r", encoding="utf-8", errors="replace")
+_comm_out = os.fdopen(os.dup(1), "w", encoding="utf-8")
+try:
+    _nul = os.open(os.devnull, os.O_RDWR)
+    for _fd in (0, 1, 2):
+        os.dup2(_nul, _fd)
+    os.close(_nul)
+except OSError:
+    pass
+sys.stdin = open(os.devnull, "r")
+sys.stdout = open(os.devnull, "w")
+sys.stderr = open(os.devnull, "w")
 
 # ---------------------------------------------------------------------------
 # Optionally install soft-sandbox audit hook
+# (path lists use os.pathsep: ':' on POSIX, ';' on Windows)
 # ---------------------------------------------------------------------------
 if os.environ.get("USE_AUDIT_HOOK") == "1":
     _writable_paths = [
-        p for p in os.environ.get("WRITABLE_PATHS", "").split(":") if p
+        p for p in os.environ.get("WRITABLE_PATHS", "").split(os.pathsep) if p
     ]
     _sensitive_paths = [
-        p for p in os.environ.get("SENSITIVE_PATHS", "").split(":") if p
+        p for p in os.environ.get("SENSITIVE_PATHS", "").split(os.pathsep) if p
     ]
     # Import from the package only if available; otherwise inline a minimal version
     try:
@@ -54,15 +81,6 @@ if os.environ.get("USE_AUDIT_HOOK") == "1":
         install_audit_hook(_writable_paths, _sensitive_paths)
     except ImportError:
         pass  # sandbox module not importable in this context; skip
-
-# ---------------------------------------------------------------------------
-# In persistent mode: redirect stdin so user code cannot read our pipe
-# ---------------------------------------------------------------------------
-if not _args.once:
-    try:
-        sys.stdin = open(os.devnull, "r")
-    except OSError:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +176,12 @@ def _run(code: str, workspace_dir: str, namespace: dict) -> dict:
 def _run_once() -> None:
     """Read all of stdin as one JSON message, execute, write result, exit."""
     try:
-        raw = sys.stdin.read()
+        raw = _comm_in.read()
         msg = json.loads(raw)
     except Exception as exc:
         result = {"stdout": "", "stderr": "", "error": f"Input parse error: {exc}", "files": []}
-        sys.stdout.write(json.dumps(result) + "\n")
-        sys.stdout.flush()
+        _comm_out.write(json.dumps(result) + "\n")
+        _comm_out.flush()
         return
 
     code = msg.get("code", "")
@@ -171,8 +189,8 @@ def _run_once() -> None:
     working_dir = msg.get("working_dir") or workspace_dir
     ns: dict = {"_working_dir": working_dir}
     result = _run(code, workspace_dir, ns)
-    sys.stdout.write(json.dumps(result) + "\n")
-    sys.stdout.flush()
+    _comm_out.write(json.dumps(result) + "\n")
+    _comm_out.flush()
 
 
 def _run_persistent() -> None:
@@ -208,6 +226,8 @@ def _run_persistent() -> None:
         working_dir = msg.get("working_dir") or workspace_dir
         namespace["_working_dir"] = working_dir
         result = _run(code, workspace_dir, namespace)
+        # Echo the request id so the server can match replies to requests.
+        result["id"] = msg.get("id")
 
         try:
             _comm_out.write(json.dumps(result) + "\n")

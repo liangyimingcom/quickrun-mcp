@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import pytest
 from pathlib import Path
 
@@ -137,8 +138,11 @@ def test_run_command_stderr(cfg):
 
 def test_run_command_working_dir(cfg, tmp_path):
     target = tmp_path / "workspace"
-    r = run_cmd("pwd", cfg, working_dir=str(target))
-    assert str(target) in r["stdout"] or str(target.resolve()) in r["stdout"]
+    # Git Bash prints /c/Users/... for pwd; pwd -W gives the Windows form C:/Users/...
+    r = run_cmd("pwd -W" if sys.platform == "win32" else "pwd", cfg, working_dir=str(target))
+    out = r["stdout"].lower()
+    forms = {str(target), str(target.resolve()), target.as_posix(), target.resolve().as_posix()}
+    assert any(f.lower() in out for f in forms), r
 
 
 def test_run_command_bad_working_dir(cfg):
@@ -179,7 +183,8 @@ def test_run_command_output_truncation(cfg, monkeypatch):
     """Large output is truncated."""
     monkeypatch.setenv("MAX_OUTPUT_CHARS", "200")
     small_cfg = Config()
-    r = run_cmd("python3 -c \"print('x' * 300)\"", small_cfg)
+    py = Path(sys.executable).as_posix()  # "python3" is not on PATH on every machine
+    r = run_cmd(f"\"{py}\" -c \"print('x' * 300)\"", small_cfg)
     assert r["truncated"] is True
     assert len(r["stdout"]) < 300
 
